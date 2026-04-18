@@ -619,12 +619,17 @@ static const char* const kSpoofedEmptyProps[] = {"ro.lightning.version",
                                                  "init.svc_debug_pid.adbd",
                                                  "init.svc.adb_root",
                                                  "init.svc.adbd",
+                                                 "service.adb.root",
                                                  nullptr};
 
 struct PropOverride {
   const char* name;
   const char* value;
 };
+static const PropOverride kSpoofedValueProps[] = {
+    {"ro.debuggable", "0"}, {"ro.build.type", "user"},         {"ro.secure", "1"},
+    {"ro.adb.secure", "1"}, {"persist.sys.usb.config", "mtp"}, {"sys.usb.config", "mtp"},
+    {nullptr, nullptr}};
 static const PropOverride kSpoofedValueProps[] = {{"ro.debuggable", "0"},
                                                   {"ro.build.type", "user"},
                                                   {"ro.secure", "1"},
