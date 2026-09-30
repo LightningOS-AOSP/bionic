@@ -1003,6 +1003,22 @@ static const DynamicPropOverride kDynamicProductProps[] = {
     {"ro.product.vendor.manufacturer", "persist.sys.pif.product.manufacturer"},
     {"ro.product.vendor.brand", "persist.sys.pif.product.brand"},
     {"ro.product.vendor.model", "persist.sys.pif.product.model"},
+    {"ro.build.product", "persist.sys.pif.product.device"},
+    {"ro.build.description", "persist.sys.pif.build.description"},
+    {"ro.build.flavor", "persist.sys.pif.build.flavor"},
+    {nullptr, nullptr}};
+static const DynamicPropOverride kDynamicProductProps[] = {
+    {"ro.product.manufacturer", "persist.sys.pif.product.manufacturer"},
+    {"ro.product.brand", "persist.sys.pif.product.brand"},
+    {"ro.product.model", "persist.sys.pif.product.model"},
+    {"ro.product.device", "persist.sys.pif.product.device"},
+    {"ro.product.name", "persist.sys.pif.product.name"},
+    {"ro.product.system.manufacturer", "persist.sys.pif.product.manufacturer"},
+    {"ro.product.system.brand", "persist.sys.pif.product.brand"},
+    {"ro.product.system.model", "persist.sys.pif.product.model"},
+    {"ro.product.vendor.manufacturer", "persist.sys.pif.product.manufacturer"},
+    {"ro.product.vendor.brand", "persist.sys.pif.product.brand"},
+    {"ro.product.vendor.model", "persist.sys.pif.product.model"},
     {nullptr, nullptr}};
 static const DynamicPropOverride kDynamicProductProps[] = {
     {"ro.product.manufacturer", "persist.sys.pif.product.manufacturer"},
@@ -1018,6 +1034,29 @@ static const DynamicPropOverride kDynamicProductProps[] = {
     {"ro.product.vendor.model", "persist.sys.pif.product.model"},
     {nullptr, nullptr}};
 
+// ro.product.<partition>.<field> for every partition (system, vendor, odm, product,
+// system_ext, the *_dlkm ones, ...), served from the same staged product identity as the
+// table above. A stock Pixel reports one identity on all of them, and the ROM's own device
+// and name would otherwise show through on the partitions that table doesn't list.
+static const char* find_product_partition_staging(const char* name) {
+  static const char kPrefix[] = "ro.product.";
+  if (strncmp(name, kPrefix, sizeof(kPrefix) - 1) != 0) return nullptr;
+  const char* partition = name + sizeof(kPrefix) - 1;
+  const char* dot = partition;
+  while (*dot && *dot != '.') ++dot;
+  if (dot == partition || *dot != '.') return nullptr;  // needs "<partition>.<field>"
+  const char* field = dot + 1;
+  for (const char* c = field; *c; ++c) {
+    if (*c == '.') return nullptr;
+  }
+  if (strcmp(field, "manufacturer") == 0) return "persist.sys.pif.product.manufacturer";
+  if (strcmp(field, "brand") == 0) return "persist.sys.pif.product.brand";
+  if (strcmp(field, "model") == 0) return "persist.sys.pif.product.model";
+  if (strcmp(field, "device") == 0) return "persist.sys.pif.product.device";
+  if (strcmp(field, "name") == 0) return "persist.sys.pif.product.name";
+  return nullptr;
+}
+
 // PIFork's leading-* wildcard properties: every read-only prop ending in the
 // suffix is served the same staged value, so partitions the table above would
 // have to list one by one (vendor_dlkm, odm, bootimage, ...) are covered as
@@ -1029,6 +1068,21 @@ struct DynamicSuffixOverride {
   size_t suffix_len;
   const char* staging_name;
 };
+#define DYNAMIC_SUFFIX(suffix, staging) \
+  {                                     \
+    suffix, sizeof(suffix) - 1, staging \
+  }
+static const DynamicSuffixOverride kDynamicSuffixProps[] = {
+    DYNAMIC_SUFFIX(".build.id", "persist.sys.pif.build.id"),
+    DYNAMIC_SUFFIX(".security_patch", "persist.sys.pif.security_patch"),
+    DYNAMIC_SUFFIX("api_level", "persist.sys.pif.api_level"),
+    // ro.build.version.real_security_patch, which ".security_patch" does not reach.
+    DYNAMIC_SUFFIX(".real_security_patch", "persist.sys.pif.security_patch"),
+    // The build type and tags of the partitions kSpoofedValueProps doesn't pin (odm, product,
+    // system_ext, bootimage, ...), taken from the fingerprint instead of a fixed value.
+    DYNAMIC_SUFFIX(".build.type", "persist.sys.pif.build.type"),
+    DYNAMIC_SUFFIX(".build.tags", "persist.sys.pif.build.tags"),
+    {nullptr, 0, nullptr}};
 #define DYNAMIC_SUFFIX(suffix, staging) \
   {                                     \
     suffix, sizeof(suffix) - 1, staging \
@@ -1193,96 +1247,121 @@ const char* custom_rom_hide_get_prop_override(const char* name, char* buffer) {
     if (strcmp(name, o->name) == 0) {
       return droidguard ? o->value : nullptr;
     }
+    for (const DynamicPropOverride* o = kDynamicProductProps; o->name; ++o) {
+      if (strcmp(name, o->name) == 0) {
+        if (!droidguard) return nullptr;
+        // This code is also linked into the loader, which cannot contain ELF TLS.
+        // The caller owns a PROP_VALUE_MAX buffer for the duration of the read.
+        int len = __system_property_get(o->staging_name, buffer);
+        if (len > 0) return buffer;
+        return nullptr;  // staging prop unset — leave the real value alone
+      }
+    }
+    if (const char* staging = find_product_partition_staging(name)) {
+      if (!droidguard) return nullptr;
+      int len = __system_property_get(staging, buffer);
+      if (len > 0) return buffer;
+      return nullptr;
+    }
+    if (const DynamicSuffixOverride* o = find_dynamic_suffix_override(name)) {
+      if (!droidguard) return nullptr;
+      int len = __system_property_get(o->staging_name, buffer);
+      if (len > 0) return buffer;
+    }
+    for (const PropOverride* o = kDroidGuardValueProps; o->name; ++o) {
+      if (strcmp(name, o->name) == 0) {
+        return droidguard ? o->value : nullptr;
+      }
+    }
+    // Wildcard entries from the PIF config apply last, after the fixed tables.
+    if (droidguard) return find_custom_prop_override(name, buffer, true);
+    return nullptr;
   }
-  // Wildcard entries from the PIF config apply last, after the fixed tables.
-  if (droidguard) return find_custom_prop_override(name, buffer, true);
-  return nullptr;
-}
 
-bool custom_rom_hide_is_app_process() {
-  return is_app_process();
-}
-
-static const PartitionDevEntry* find_partition_entry(const char* path) {
-  if (!path) return nullptr;
-  for (const PartitionDevEntry* e = kPartitionDmMap; e->path; ++e) {
-    if (strcmp(path, e->path) == 0) return e;
+  bool custom_rom_hide_is_app_process() {
+    return is_app_process();
   }
-  return nullptr;
-}
 
-void custom_rom_hide_spoof_stat(const char* path, struct stat* sb) {
-  if (!is_app_process() || !path || !sb) return;
-  if (strcmp(path, "/data/local/tmp") == 0) {
-    sb->st_ino = 4223;
-    return;
+  static const PartitionDevEntry* find_partition_entry(const char* path) {
+    if (!path) return nullptr;
+    for (const PartitionDevEntry* e = kPartitionDmMap; e->path; ++e) {
+      if (strcmp(path, e->path) == 0) return e;
+    }
+    return nullptr;
   }
-  const PartitionDevEntry* e = find_partition_entry(path);
-  if (e && major(sb->st_dev) != DM_MAJOR) sb->st_dev = makedev(DM_MAJOR, e->dm_minor);
-}
 
-void custom_rom_hide_spoof_statx(const char* path, struct statx* sx) {
-  if (!is_app_process() || !path || !sx) return;
-  const PartitionDevEntry* e = find_partition_entry(path);
-  if (e && sx->stx_dev_major != DM_MAJOR) {
-    sx->stx_dev_major = DM_MAJOR;
-    sx->stx_dev_minor = e->dm_minor;
+  void custom_rom_hide_spoof_stat(const char* path, struct stat* sb) {
+    if (!is_app_process() || !path || !sb) return;
+    if (strcmp(path, "/data/local/tmp") == 0) {
+      sb->st_ino = 4223;
+      return;
+    }
+    const PartitionDevEntry* e = find_partition_entry(path);
+    if (e && major(sb->st_dev) != DM_MAJOR) sb->st_dev = makedev(DM_MAJOR, e->dm_minor);
   }
-}
 
-void custom_rom_hide_spoof_fd_stat(int fd, struct stat* sb) {
-  if (fd < 0 || !sb) return;
-  if (!is_tracked_fd(fd)) return;
-  if (!is_app_process()) return;
-
-  int saved_errno = errno;
-  char real_path[512];
-  if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
-    struct stat real_sb;
-    if (raw_fstatat(AT_FDCWD, real_path, &real_sb, 0) == 0) {
-      *sb = real_sb;
-    } else {
-      sb->st_dev = makedev(0, 0);
-      sb->st_ino = 0;
+  void custom_rom_hide_spoof_statx(const char* path, struct statx* sx) {
+    if (!is_app_process() || !path || !sx) return;
+    const PartitionDevEntry* e = find_partition_entry(path);
+    if (e && sx->stx_dev_major != DM_MAJOR) {
+      sx->stx_dev_major = DM_MAJOR;
+      sx->stx_dev_minor = e->dm_minor;
     }
   }
-  errno = saved_errno;
-}
 
-void custom_rom_hide_spoof_fd_statx(int fd, unsigned mask, struct statx* sx) {
-  if (fd < 0 || !sx) return;
-  if (!is_tracked_fd(fd)) return;
-  if (!is_app_process()) return;
+  void custom_rom_hide_spoof_fd_stat(int fd, struct stat* sb) {
+    if (fd < 0 || !sb) return;
+    if (!is_tracked_fd(fd)) return;
+    if (!is_app_process()) return;
 
-  int saved_errno = errno;
-  char real_path[512];
-  if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
-    struct statx real_sx;
-    if (raw_statx(AT_FDCWD, real_path, 0, mask, &real_sx) == 0) {
-      *sx = real_sx;
-    } else {
-      sx->stx_dev_major = 0;
-      sx->stx_dev_minor = 0;
-      sx->stx_ino = 0;
+    int saved_errno = errno;
+    char real_path[512];
+    if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
+      struct stat real_sb;
+      if (raw_fstatat(AT_FDCWD, real_path, &real_sb, 0) == 0) {
+        *sb = real_sb;
+      } else {
+        sb->st_dev = makedev(0, 0);
+        sb->st_ino = 0;
+      }
     }
+    errno = saved_errno;
   }
-  errno = saved_errno;
-}
 
-void custom_rom_hide_spoof_fd_statfs(int fd, struct statfs* sf) {
-  if (fd < 0 || !sf) return;
-  if (!is_tracked_fd(fd)) return;
-  if (!is_app_process()) return;
+  void custom_rom_hide_spoof_fd_statx(int fd, unsigned mask, struct statx* sx) {
+    if (fd < 0 || !sx) return;
+    if (!is_tracked_fd(fd)) return;
+    if (!is_app_process()) return;
 
-  int saved_errno = errno;
-  char real_path[512];
-  if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
-    struct statfs real_sf;
-    if (raw_statfs(real_path, &real_sf) == 0) {
-      *sf = real_sf;
-    } else {
-      sf->f_type = PROC_SUPER_MAGIC;
+    int saved_errno = errno;
+    char real_path[512];
+    if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
+      struct statx real_sx;
+      if (raw_statx(AT_FDCWD, real_path, 0, mask, &real_sx) == 0) {
+        *sx = real_sx;
+      } else {
+        sx->stx_dev_major = 0;
+        sx->stx_dev_minor = 0;
+        sx->stx_ino = 0;
+      }
     }
+    errno = saved_errno;
   }
-  errno = saved_errno;
-}
+
+  void custom_rom_hide_spoof_fd_statfs(int fd, struct statfs* sf) {
+    if (fd < 0 || !sf) return;
+    if (!is_tracked_fd(fd)) return;
+    if (!is_app_process()) return;
+
+    int saved_errno = errno;
+    char real_path[512];
+    if (resolve_encoded_memfd_path(fd, real_path, sizeof(real_path))) {
+      struct statfs real_sf;
+      if (raw_statfs(real_path, &real_sf) == 0) {
+        *sf = real_sf;
+      } else {
+        sf->f_type = PROC_SUPER_MAGIC;
+      }
+    }
+    errno = saved_errno;
+  }
