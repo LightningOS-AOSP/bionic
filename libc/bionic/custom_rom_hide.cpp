@@ -68,10 +68,9 @@ static const char* const kMountFilterKeywords[] = {
     "/debug_ramdisk", "overlay", "magisk", "ksu", "KSU", "ksud", "apatch", "/data/adb", nullptr
 };
 
-static const char* const kAllowlistedPackages[] = {
-    "org.lineageos.updater",
-    nullptr
-};
+static const char *const kAllowlistedPackages[] = {
+    "org.lineageos.updater", "com.lightning.updater",
+    nullptr};
 
 #define DM_MAJOR 253u
 
